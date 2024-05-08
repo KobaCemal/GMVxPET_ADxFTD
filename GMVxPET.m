@@ -230,4 +230,4 @@ mean(ps_corr_ftdmci.*mean(intergroup_ftd_vs_mci_t))
 
 %%  Brainstem volume difference between FTD and AD 
 
-[H,P,CI,STATS] = ttest2(fsdata_res(strcmp(subjects(:,3),'FTD'),1),fsdata_res(strcmp(subjects(:,3),'AD'),1))
+[H,P,CI,STATS] = ttest2(fsdata_res(strcmp(subjects(:,3),'FTD'),83),fsdata_res(strcmp(subjects(:,3),'AD'),83))
