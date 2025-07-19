@@ -148,7 +148,7 @@ counts = splitapply(@numel, T.site, G);
 count_table = table(site_list, dx_list, counts);
 
 % Step 3: Find sites that have at least 5 for *each* diagnosis
-min_required = 10;
+min_required = 5;
 unique_sites = unique(site);
 
 valid_sites = [];
@@ -233,16 +233,17 @@ xlabel('Site')
 ylabel('Mean GMV')
 ylim([5000 9000])
 title('Mean GMV by Site / After Combat')
+imagesc(corr(gmv_data'));title('Intersubject Correlation Before Combat');figure;imagesc(corr(residuals));title('Structural Covariance After Combat');title('Intersubject Correlation After Combat');
 
-
+imagesc(corr(gmv_data));title('Structural Covariance Before Combat');figure;imagesc(corr(residuals'));title('Structural Covariance After Combat')
 %% Regional GMV difference
-idx = strcmp(diagnosis, 'AD') | strcmp(diagnosis, 'CN');
-for i=1:size(residuals,1)
-    [p,tbl,stats] = anova1((residuals(i,idx)),diagnosis, 'off');
-    ps_gmv(i)=p;
-    fs_gmv(i)=tbl{2, 5};
-    stats_gmv{i}=stats;
-end
+% idx = strcmp(diagnosis, 'AD') | strcmp(diagnosis, 'CN');
+% for i=1:size(residuals,1)
+%     [p,tbl,stats] = anova1((residuals(i,idx)),diagnosis(idx), 'off');
+%     ps_gmv(i)=p;
+%     fs_gmv(i)=tbl{2, 5};
+%     stats_gmv{i}=stats;
+% end
 
 
 % Check the group-level differences
@@ -265,7 +266,6 @@ figure;plot_cortical(parcel_to_surface(results_to_display,'aparc_fsa5'), 'cmap',
 results_to_display=abs(ds_gmv(subcortical_index));
 figure;plot_subcortical(results_to_display,'ventricles','False','cmap', 'Reds')
 
-%% PET correlations
 
 %% Correlate GM data with PET data
 
@@ -345,7 +345,7 @@ sgtitle('Z-transformed Correlation of Subject GMV with PET Maps by Diagnosis');
 
 
 
-%
+% Plot with significance stars
 n_subjects = size(residuals, 2);
 n_pet = size(petdata_mat, 1);
 r_mat = NaN(n_subjects, n_pet);  % 1632 x 13
@@ -359,6 +359,9 @@ for p = 1:n_pet
 
     for s = 1:n_subjects
         subj_map = residuals_t(s, :)';  % 83 x 1
+        gm_z = (subj_map - mean(subj_map, 1)) ./ std(subj_map, 0, 1);      % [82 x 3227]
+        pet_z = (pet_map - mean(pet_map, 2)) ./ std(pet_subset, 0, 2);  % [13 x 82]
+
         r_mat(s, p) = corr(subj_map, pet_map, 'rows', 'pairwise');
     end
 end
@@ -445,3 +448,37 @@ for p = 1:n_pet
 end
 
 sgtitle('Z-transformed Correlation of Subject GMV with PET Maps by Diagnosis');
+
+%% Delta analysis
+[n_regions, n_subjects] = size(residuals);
+n_pet = size(petdata_mat, 1);
+
+z_mat_loo = nan(n_subjects, n_pet, n_regions);  % Preallocate
+
+% Loop over each region to leave it out to calculate the correlation values
+% after removing each region
+for r = 1:n_regions
+    include_idx = setdiff(1:n_regions, r);  % leave one region out
+
+    % Subset data excluding region r
+    gm_subset = residuals(include_idx, :);         % [82 x 3227]
+    pet_subset = petdata_mat(:, include_idx);      % [13 x 82]
+
+    % Z-score (mean-centering and variance normalization)
+    gm_z = (gm_subset - mean(gm_subset, 1)) ./ std(gm_subset, 0, 1);      % [82 x 3227]
+    pet_z = (pet_subset - mean(pet_subset, 2)) ./ std(pet_subset, 0, 2);  % [13 x 82]
+
+    % Compute correlation: dot product over regions (dim=1)
+    % Transpose gm_z to [3227 x 82], so we can compute dot product with pet_z [13 x 82]
+    corr_matrix = (gm_z' * pet_z') / (length(include_idx) - 1);  % [3227 x 13]
+
+    % Fisher z-transform
+    z_mat_loo(:, :, r) = atanh(corr_matrix);
+end
+
+
+for i=1:size(z_mat_loo,1)
+    for j=1:size(z_mat_loo,2)
+            difmat(i,j,:)=z_mat(i,j)-squeeze(z_mat_loo(i,j,:));
+    end
+end
