@@ -188,6 +188,13 @@ sex_dummy=grp2idx(sex)-1;
 icv=demographics_reduced.ICV;
 site=demographics_reduced.SITE;
 diagnosis=demographics_reduced.DX_bl; % there is another DX column with different labeling
+tau=demographics_reduced.TAU;
+ptau=demographics_reduced.PTAU;
+mmse=demographics_reduced.MMSE;
+MOCA=demographics_reduced.MOCA;
+adascog=demographics_reduced.ADAS11;
+AV45_bl=demographics_reduced.AV45_bl;
+
 
 labels=unique(demographics_reduced.DX_bl);
 sum(strcmp(sex,'Male'))
@@ -207,6 +214,10 @@ multcompare(STATS) % The groups have different icv distribution
 mean(icv(strcmp(diagnosis,'AD')))
 std(icv(strcmp(diagnosis,'AD')))
 
+[P,ANOVATAB,STATS] =anova1(adascog(~isnan(adascog)),diagnosis(~isnan(adascog))); % icv 
+multcompare(STATS) % The groups have different icv distribution 
+mean(icv(strcmp(diagnosis,'AD')))
+std(icv(strcmp(diagnosis,'AD')))
 
 %% Remove the nuisance variables from GM data -- using combat for site effects
 
@@ -479,6 +490,39 @@ end
 
 for i=1:size(z_mat_loo,1)
     for j=1:size(z_mat_loo,2)
-            difmat(i,j,:)=z_mat(i,j)-squeeze(z_mat_loo(i,j,:));
+            difmat(i,j,:)=squeeze(z_mat_loo(i,j,:))-z_mat(i,j);
     end
 end
+
+% Do the group level analysis on delta
+for j=1:size(z_mat_loo,2)
+for i=1:size(z_mat_loo,3)
+    [h,p,ci,stats] = ttest2(difmat(strcmp(diagnosis, 'AD'),j,i),difmat(strcmp(diagnosis, 'CN'),j,i) );
+    d=meanEffectSize(difmat(strcmp(diagnosis, 'AD'),j,i),difmat(strcmp(diagnosis, 'CN'),j,i));
+    ds_gmv(i)=d.Effect;
+    ps_gmv(i)=p;
+    ts_gmv(i)=stats.tstat;
+end
+corrected_ps=fdr_bh(ps_gmv);
+results_to_display=ts_gmv(cortical_index).*corrected_ps(cortical_index);
+figure;plot_cortical(parcel_to_surface(results_to_display,'aparc_fsa5'), 'cmap', 'RdBu_r', 'surface_name', 'fsa5', 'color_range', [-1*max(abs(results_to_display)) max(abs(results_to_display))])
+title(sprintf('Delta difference ADxCN for %s', short_names{j}), 'Interpreter', 'none');
+
+results_to_display=ts_gmv(subcortical_index).*corrected_ps(subcortical_index);
+figure;plot_subcortical(results_to_display,'ventricles','False','cmap', 'RdBu_r','color_range', [-1*max(abs(results_to_display)) max(abs(results_to_display))])
+title(sprintf('Delta difference ADxCN for %s', short_names{j}), 'Interpreter', 'none');
+
+% results_to_display=abs(ds_gmv(cortical_index));
+% figure;plot_cortical(parcel_to_surface(results_to_display,'aparc_fsa5'), 'cmap', 'Reds', 'surface_name', 'fsa5')
+% results_to_display=abs(ds_gmv(subcortical_index));
+% figure;plot_subcortical(results_to_display,'ventricles','False','cmap', 'Reds')
+% title(sprintf('Delta difference between AD and CN for %s', short_names{j}), 'Interpreter', 'none');
+
+end
+
+% results_to_display=abs(ds_gmv(cortical_index));
+% figure;plot_cortical(parcel_to_surface(results_to_display,'aparc_fsa5'), 'cmap', 'Reds', 'surface_name', 'fsa5',...
+%     'color_range', [0.01 0.015])
+% results_to_display=abs(ds_gmv(subcortical_index));
+% figure;plot_subcortical(results_to_display,'ventricles','False','cmap', 'Reds')
+
