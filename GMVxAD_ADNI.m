@@ -17,6 +17,8 @@ addpath(genpath('/home/koba/Desktop/kramer/adni/itsavibeNature2/ENIGMA'))
 % Extract the 'New Code' column
 new_codes = region_codes.newcode;
 
+%new_codes=strrep(new_codes,'CV', 'CT');
+
 % Remove entries that are "NOT FOUND" or empty
 valid_codes = new_codes(~strcmp(new_codes, 'NOT FOUND') & ~cellfun(@isempty, new_codes));
 
@@ -277,7 +279,77 @@ figure;plot_cortical(parcel_to_surface(results_to_display,'aparc_fsa5'), 'cmap',
 results_to_display=abs(ds_gmv(subcortical_index));
 figure;plot_subcortical(results_to_display,'ventricles','False','cmap', 'Reds')
 
+% Plot with line fit
+% Inputs assumed:
+% residuals:     [83 x N] matrix of GMV residuals (N subjects)
+% diagnosis:     [N x 1] cell array of group labels per subject
+% region_codes.label: [cell array of region names], e.g., region_codes.label{1:82}
+% Note: you must define or load region_codes.label before running this
 
+% Setup
+n_regions = 82;
+group_order = {'CN', 'SMC', 'EMCI', 'LMCI', 'AD'};
+n_groups = numel(group_order);
+colors = lines(n_groups);
+
+% Convert diagnosis to categorical with specified order
+diagnosis_cat = categorical(diagnosis, group_order, 'Ordinal', true);
+xvals = 1:n_groups;  % Group index for fitting
+
+% Create figure
+figure('Position', [100, 100, 1600, 900]);
+tiledlayout(4, 4, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+for i = 49:64 %n_regions
+    nexttile;
+    hold on;
+
+    % Get data for this region
+    region_data = residuals(i, :)';
+
+    % Plot boxplot
+    boxplot(region_data, diagnosis_cat, 'Colors', 'k', 'Symbol', '');
+    
+    % Compute group means
+    group_means = zeros(1, n_groups);
+    for g = 1:n_groups
+        group_idx = strcmp(diagnosis, group_order{g});
+        group_means(g) = mean(region_data(group_idx), 'omitnan');
+    end
+
+    % Polynomial fit (2nd order)
+    p = polyfit(xvals, group_means, 2);
+    x_fit = linspace(1, n_groups, 100);
+    y_fit = polyval(p, x_fit);
+
+    % Compute R²
+    y_pred = polyval(p, xvals);
+    SS_res = sum((group_means - y_pred).^2);
+    SS_tot = sum((group_means - mean(group_means)).^2);
+    R_squared = 1 - (SS_res / SS_tot);
+
+    % Plot the fitted curve
+    plot(x_fit, y_fit, 'r-', 'LineWidth', 1.5);
+    % 
+    % % Show R² value
+    % y_text = max([group_means y_fit], [], 'omitnan');
+    % text(1, y_text - 0.05 * abs(y_text), sprintf('R^2 = %.2f', R_squared), ...
+    %  'FontSize', 6, 'Color', 'r', 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
+
+    % Axes formatting
+    xticks(xvals);
+    xticklabels(group_order);
+    xtickangle(45);
+    set(gca, 'FontSize', 6);
+    ylabel('GMV Residual', 'FontSize', 6);
+
+    % Use region label
+    title(sprintf('%s (R^2=%.2f)', region_codes.label{i}, R_squared), ...
+      'Interpreter', 'none', 'FontSize', 6);
+end
+
+% Super title
+sgtitle('GMV Residuals by Diagnosis (Boxplots with Polynomial Fit)', 'FontSize', 12);
 %% Correlate GM data with PET data
 
 n_subjects = size(residuals, 2);
@@ -525,4 +597,78 @@ end
 %     'color_range', [0.01 0.015])
 % results_to_display=abs(ds_gmv(subcortical_index));
 % figure;plot_subcortical(results_to_display,'ventricles','False','cmap', 'Reds')
+
+%% Let's try gradients
+labeling=parcel_to_surface([1:68],'aparc_fsa5')';
+addpath(genpath('/media/koba/MULTIBOOT/blindness_gradients/source/toolboxes/BrainStat-master'))
+[surf_lh, surf_rh] = fetch_template_surface('fsaverage5','layer','inflated');
+rmpath(genpath('/media/koba/MULTIBOOT/blindness_gradients/source/toolboxes/BrainStat-master'))
+reference_matrix=corr(gmv_data(strcmp(diagnosis,'CN'),cortical_index));
+reference_gradient = GradientMaps('kernel','cs','approach','dm','alignment','pa','n_components',3 );
+reference_gradient = reference_gradient.fit(corr(residuals(cortical_index,strcmp(diagnosis,'CN'))'));
+plot_hemispheres(reference_gradient.gradients{1}(:,[1:3]), {surf_lh,surf_rh}, ...
+'parcellation',labeling, 'labeltext',{'Gradient 1','Gradient 2', 'Gradient 3'});
+gradient_in_euclidean(reference_gradient.gradients{1}(:,[1 2]),{surf_lh,surf_rh},labeling);
+
+gm_smc = GradientMaps('kernel','cs','approach','dm','alignment','pa','n_components',3 );
+gm_smc = gm_smc.fit(corr(residuals(cortical_index,strcmp(diagnosis,'SMC'))'), 'reference', reference_gradient.gradients{1});
+plot_hemispheres(gm_smc.aligned{1}(:,[1:3]), {surf_lh,surf_rh}, ...
+'parcellation',labeling, 'labeltext',{'Gradient 1','Gradient 2', 'Gradient 3'});
+gradient_in_euclidean(gm_smc.aligned{1}(:,[1 2]),{surf_lh,surf_rh},labeling);
+
+gm_emci = GradientMaps('kernel','cs','approach','dm','alignment','pa','n_components',3 );
+gm_emci = gm_emci.fit(corr(residuals(cortical_index,strcmp(diagnosis,'EMCI'))'), 'reference', reference_gradient.gradients{1});
+plot_hemispheres(gm_emci.aligned{1}(:,[1:3]), {surf_lh,surf_rh}, ...
+'parcellation',labeling, 'labeltext',{'Gradient 1','Gradient 2', 'Gradient 3'});
+gradient_in_euclidean(gm_emci.aligned{1}(:,[1 2]),{surf_lh,surf_rh},labeling);
+
+gm_lmci = GradientMaps('kernel','cs','approach','dm','alignment','pa','n_components',3 );
+gm_lmci = gm_lmci.fit(corr(residuals(cortical_index,strcmp(diagnosis,'LMCI'))'), 'reference', reference_gradient.gradients{1});
+plot_hemispheres(gm_lmci.aligned{1}(:,[1:3]), {surf_lh,surf_rh}, ...
+'parcellation',labeling, 'labeltext',{'Gradient 1','Gradient 2', 'Gradient 3'});
+gradient_in_euclidean(gm_lmci.aligned{1}(:,[1 2]),{surf_lh,surf_rh},labeling);
+
+gm_ad = GradientMaps('kernel','cs','approach','dm','alignment','pa','n_components',3 );
+gm_ad = gm_ad.fit(corr(residuals(cortical_index,strcmp(diagnosis,'AD'))'), 'reference', reference_gradient.gradients{1});
+plot_hemispheres(gm_ad.aligned{1}(:,[1:3]), {surf_lh,surf_rh}, ...
+'parcellation',labeling, 'labeltext',{'Gradient 1','Gradient 2', 'Gradient 3'});
+gradient_in_euclidean(gm_ad.aligned{1}(:,[1 2]),{surf_lh,surf_rh},labeling);
+
+nt_gradient = GradientMaps('kernel','cs','approach','dm','alignment','pa','n_components',3 );
+nt_gradient = nt_gradient.fit(corr(petdata_mat(:,cortical_index)));
+plot_hemispheres(nt_gradient.gradients{1}(:,[1:3]), {surf_lh,surf_rh}, ...
+'parcellation',labeling, 'labeltext',{'Gradient 1','Gradient 2', 'Gradient 3'});
+gradient_in_euclidean(nt_gradient.gradients{1}(:,[1 2]),{surf_lh,surf_rh},labeling);
+
+corr(nt_gradient.gradients{1}(:,1),reference_gradient.aligned{1}(:,1))
+corr(nt_gradient.gradients{1}(:,1),gm_smc.aligned{1}(:,1))
+corr(nt_gradient.gradients{1}(:,1),gm_emci.aligned{1}(:,1))
+corr(nt_gradient.gradients{1}(:,1),gm_lmci.aligned{1}(:,1))
+corr(nt_gradient.gradients{1}(:,1),gm_ad.aligned{1}(:,1))
+
+% Spin permutations
+[fc_ctx_p, fc_ctx_d]   = spin_test(nt_gradient.gradients{1}(:,1), reference_gradient.aligned{1}(:,1), 'surface_name', 'fsa5', ...
+                                   'parcellation_name', 'aparc', 'n_rot', 1000, ...
+                                   'type', 'pearson');
+prctile(abs(fc_ctx_d),95)>corr(nt_gradient.gradients{1}(:,1),reference_gradient.aligned{1}(:,1))
+
+[fc_ctx_p, fc_ctx_d]   = spin_test(nt_gradient.gradients{1}(:,1), gm_smc.aligned{1}(:,1), 'surface_name', 'fsa5', ...
+                                   'parcellation_name', 'aparc', 'n_rot', 1000, ...
+                                   'type', 'pearson');
+prctile(abs(fc_ctx_d),95)>corr(nt_gradient.gradients{1}(:,1),gm_smc.aligned{1}(:,1))
+
+[fc_ctx_p, fc_ctx_d]   = spin_test(nt_gradient.gradients{1}(:,1), gm_emci.aligned{1}(:,1), 'surface_name', 'fsa5', ...
+                                   'parcellation_name', 'aparc', 'n_rot', 1000, ...
+                                   'type', 'pearson');
+prctile(abs(fc_ctx_d),95)>corr(nt_gradient.gradients{1}(:,1),gm_emci.aligned{1}(:,1))
+
+[fc_ctx_p, fc_ctx_d]   = spin_test(nt_gradient.gradients{1}(:,1), gm_lmci.aligned{1}(:,1), 'surface_name', 'fsa5', ...
+                                   'parcellation_name', 'aparc', 'n_rot', 1000, ...
+                                   'type', 'pearson');
+prctile(abs(fc_ctx_d),95)>corr(nt_gradient.gradients{1}(:,1),gm_lmci.aligned{1}(:,1))
+
+[fc_ctx_p, fc_ctx_d]   = spin_test(nt_gradient.gradients{1}(:,1), gm_ad.aligned{1}(:,1), 'surface_name', 'fsa5', ...
+                                   'parcellation_name', 'aparc', 'n_rot', 1000, ...
+                                   'type', 'pearson');
+prctile(abs(fc_ctx_d),95)>corr(nt_gradient.gradients{1}(:,1),gm_ad.aligned{1}(:,1))
 
