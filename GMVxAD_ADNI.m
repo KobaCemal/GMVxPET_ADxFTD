@@ -1,17 +1,125 @@
 clear
+subjects_fs_data = readtable('UCSFFSX7_05May2025.csv');
+demographics     = readtable('ADNIMERGE_05May2025 (4).csv');
+region_codes     = readtable('full_region_table_with_codes.csv');
+petdata_full     = readtable('parcellated_petfiles.csv');
 
-%% Get the necessary tables
-subjects_fs_data=readtable('/home/koba/Desktop/kramer/adni/itsavibeNature2/UCSFFSX7_05May2025.csv');
-region_codes=readtable('/home/koba/Desktop/kramer/adni/itsavibeNature2/full_region_table_with_codes.csv');
-demographics=readtable('/home/koba/Desktop/kramer/adni/itsavibeNature2/ADNIMERGE/ADNIMERGE_05May2025 (4).csv');
-petdata_full=readtable('/home/koba/Desktop/kramer/JuSpace-JuSpace_v1.5/JuSpace_v1.5/txtfiles/parcellated_petfiles.csv');
-pet_of_interest=[1 4 6 10 11 13 14 15 18 20 24 25 30];
-petdata=petdata_full(pet_of_interest,:);
-petdata_mat=table2array(petdata(:,2:end));
+pet_of_interest = [1 4 6 10 11 13 14 15 18 20 24 25 30];
+petdata   = petdata_full(pet_of_interest,:);
+petdata_mat = table2array(petdata(:,2:end));
 
 % add Combat toolbox to the path
-addpath(genpath('/home/koba/Desktop/kramer/adni/itsavibeNature2/ComBatHarmonization-master/'))
-addpath(genpath('/home/koba/Desktop/kramer/adni/itsavibeNature2/ENIGMA'))
+addpath(genpath('ComBatHarmonization-master/'))
+addpath(genpath('ENIGMA-master'))
+
+%% Sort the data: get the GMV data and their corresponding meta-data
+% Get the unique ID values from subjects_fs_data
+unique_ids = unique(vertcat(subjects_fs_data.PTID));
+
+% Preallocate reduced tables
+fs_data_reduced        = subjects_fs_data([],:);
+demographics_reduced_to_single   = demographics([],:);
+
+% ----------- Build NaN row for demographics ----------
+nan_row = demographics(1,:);   % copy structure
+for v = 1:width(nan_row)
+    val = nan_row{1,v};
+    if isnumeric(val)
+        nan_row{1,v} = NaN;
+    elseif isdatetime(val)
+        nan_row{1,v} = NaT;
+    elseif isduration(val)
+        nan_row{1,v} = duration(NaN,0,0);
+    elseif isstring(val)
+        nan_row{1,v} = "";
+    elseif iscell(val) % for cell arrays (like cellstr)
+        nan_row{1,v} = {''};
+    elseif iscategorical(val)
+        nan_row{1,v} = categorical(missing);
+    else
+        nan_row{1,v} = missing; % generic fallback
+    end
+end
+
+% Day difference limit (in days)
+day_limit = 90;
+
+% ----------- Loop over subjects ----------
+for i = 1:length(unique_ids)
+    current_id = unique_ids{i};
+    disp(['Processing subject ' num2str(i) ' / ' num2str(length(unique_ids))]);
+
+    % Sort FS data for this subject
+    id_data_in_fs_data = sortrows(subjects_fs_data(strcmp(subjects_fs_data.PTID,current_id),:), "EXAMDATE");
+    exam_date_in_fs_data = id_data_in_fs_data(1,:).EXAMDATE;
+
+    % Sort demographics for this subject
+    id_data_in_demographics = sortrows(demographics(strcmp(demographics.PTID,current_id),:), "EXAMDATE");
+    exam_date_in_demographics = id_data_in_demographics.EXAMDATE;
+
+    % Default to NaN row but preserve PTID
+    subject_demographics = nan_row;
+    subject_demographics.PTID(:) = {current_id};
+
+    % Match exam date or find closest
+    if ~isempty(id_data_in_demographics)
+        if any(strcmp(string(exam_date_in_fs_data), string(exam_date_in_demographics)))
+            % Exact match (might be multiple rows → pick first)
+            matches = id_data_in_demographics(strcmp(string(exam_date_in_fs_data), string(id_data_in_demographics.EXAMDATE)),:);
+            subject_demographics = matches(1,:);
+        else
+            % Closest available exam date
+            day_difference = abs(exam_date_in_fs_data - exam_date_in_demographics);
+            if min(day_difference) <= days(day_limit)
+                [~, idx_min] = min(day_difference);
+                subject_demographics = id_data_in_demographics(idx_min,:);
+            end
+        end
+    end
+
+    % Always overwrite PTID in demographics row to match current subject
+    subject_demographics.PTID(:) = {current_id};
+    
+    if ~isnan(subject_demographics.AGE)
+    % Append
+    fs_data_reduced      = [fs_data_reduced; id_data_in_fs_data(1,:)];
+    demographics_reduced_to_single = [demographics_reduced_to_single; subject_demographics];
+    end
+end
+
+% ----------- Sanity check ----------
+if ~isequal(fs_data_reduced.PTID, demographics_reduced_to_single.PTID)
+    bad_idx = find(~strcmp(fs_data_reduced.PTID, demographics_reduced_to_single.PTID));
+    warning('PTID mismatch found at these rows:');
+    disp(table(bad_idx, fs_data_reduced.PTID(bad_idx), demographics_reduced_to_single.PTID(bad_idx)));
+else
+    disp(' PTIDs match and are aligned between fs_data_reduced and demographics_reduced');
+end
+
+% demographics_reduced_noPTID=removevars(demographics_reduced, "PTID")
+% 
+% demographics_reduced=sortrows(demographics_reduced, "PTID");
+% fs_data_reduced=sortrows(fs_data_reduced, "PTID");
+% 
+demographics_reduced_to_single.AGE_ADJUSTED=demographics_reduced_to_single.AGE+demographics_reduced_to_single.Years_bl;
+ix=demographics_reduced_to_single.Years_bl==0;
+demographics_reduced_to_single=demographics_reduced_to_single(ix,:); % remove the entries that are not in the baseline year
+fs_data_reduced=fs_data_reduced(ix,:);
+% sum(strcmp(labels,"CN"))
+% sum(strcmp(labels,"SMC"))
+% sum(strcmp(labels,"EMCI"))
+% sum(strcmp(labels,"LMCI"))
+% sum(strcmp(labels,"AD"))
+missing_index = ismissing(demographics_reduced_to_single.AGE_ADJUSTED) + ismissing(demographics_reduced_to_single.PTGENDER) + ...
+    ismissing(demographics_reduced_to_single.ICV) + ismissing(demographics_reduced_to_single.SITE) + ismissing(demographics_reduced_to_single.DX_bl);
+missing_index=missing_index>0;
+
+
+demographics_reduced_to_single(missing_index,:) = [];
+fs_data_reduced(missing_index,:) = [];
+% 
+% fs_data_reduced.PTID demographics_reduced.PTID
+
 
 %% Prepare the Freesurfer data as we had in the previous study (83 regions)
 % Extract the 'New Code' column
@@ -23,10 +131,11 @@ new_codes = region_codes.newcode;
 valid_codes = new_codes(~strcmp(new_codes, 'NOT FOUND') & ~cellfun(@isempty, new_codes));
 
 % Keep columns in the same order as 'valid_codes'
-[~, ia, ib] = intersect(valid_codes, subjects_fs_data.Properties.VariableNames, 'stable');
+[~, ia, ib] = intersect(valid_codes, fs_data_reduced.Properties.VariableNames, 'stable');
 
 % Subset the data table
-subjects_fs_data_filtered = subjects_fs_data(:, valid_codes(ia));
+subjects_data_filtered=fs_data_reduced;
+subjects_fs_data_filtered = subjects_data_filtered(:, valid_codes(ia));
 subjects_fs_data_filtered.BrainStem=subjects_fs_data_filtered.ST76SV + subjects_fs_data_filtered.ST17SV; % Brain stem is given in two hemispheres. Summing them up to be consistent with the previous analyses. 
 subjects_fs_data_filtered.ST76SV=[];
 subjects_fs_data_filtered.ST17SV=[];
@@ -36,22 +145,23 @@ sum(sum(isnan(table2array(subjects_fs_data_filtered)))) % 2044  -- 0.4 percent o
 max(sum(isnan(table2array(subjects_fs_data_filtered)))) % max number of nans -- 65  
 subjects_fs_data_filtered_mat=table2array(subjects_fs_data_filtered); % get an array version for ease of use
 
-% Replace missing values 
-for i = 1:width(subjects_fs_data_filtered_mat)
-    column = subjects_fs_data_filtered_mat(:, i);
+% % Replace missing values 
+% for i = 1:width(subjects_fs_data_filtered_mat)
+%     column = subjects_fs_data_filtered_mat(:, i);
+% 
+%     if isnumeric(column)
+%         % Compute column mean ignoring NaNs
+%         col_mean = mean(column, 'omitnan');
+% 
+%         % Replace NaNs with the column mean
+%         column(isnan(column)) = col_mean;
+% 
+%         % Assign the cleaned column back to the table
+%         subjects_fs_data_filtered_mat(:, i)= column;
+%     end
+% end
 
-    if isnumeric(column)
-        % Compute column mean ignoring NaNs
-        col_mean = mean(column, 'omitnan');
-
-        % Replace NaNs with the column mean
-        column(isnan(column)) = col_mean;
-
-        % Assign the cleaned column back to the table
-        subjects_fs_data_filtered_mat(:, i)= column;
-    end
-end
-
+% Prepare the indices for plotting
 cortical_index = strcmp(region_codes.structure,'cortex'); % must get the cortical and subcortical region index from the region list for visualization
 subcortical_index=[find(strcmp(region_codes.label,'accumbensarea') & strcmp(region_codes.hemisphere, 'L'))...
     find(strcmp(region_codes.label,'amygdala') & strcmp(region_codes.hemisphere, 'L'))...
@@ -67,77 +177,19 @@ subcortical_index=[find(strcmp(region_codes.label,'accumbensarea') & strcmp(regi
     find(strcmp(region_codes.label,'pallidum') & strcmp(region_codes.hemisphere, 'R'))...
     find(strcmp(region_codes.label,'putamen') & strcmp(region_codes.hemisphere, 'R'))...
     find(strcmp(region_codes.label,'thalamusproper') & strcmp(region_codes.hemisphere, 'R'))]';
-%% Get the demographics/metadata during the first session of the subject
 
-% Create an empty row for replacing the subjects with missing data
-empty_row = demographics(1, :);  
-for var = 1:width(empty_row)
-    val = empty_row{1, var};
+% Remove the subjects that do not have the necessary demographics
+subject_demographics_single_session=demographics_reduced_to_single;
 
-    if isnumeric(val) || islogical(val)
-        empty_row{1, var} = NaN;
-    elseif isstring(val)
-        empty_row{1, var} = missing;
-    elseif iscellstr(val)
-        empty_row{1, var} = {''};
-    elseif iscategorical(val)
-        empty_row{1, var} = categorical(missing);
-    else
-        empty_row{1, var} = missing;  % fallback
-    end
-end
 
-% Every subjct has multiple sessions. Choose the one with 'bl' code in
-% VISCODE column
-subject_demographics_single_session=repmat(empty_row,size(subjects_fs_data_filtered,1),1);
-missingsubjects=nan(size(subjects_fs_data_filtered,1),1);
 
-for i=1:size(subjects_fs_data_filtered,1)
-    if sum(contains(demographics.PTID,subjects_fs_data.PTID{i}))>0 %if the data has its metadata
-        demo=demographics(contains(demographics.PTID,subjects_fs_data.PTID{i}),:); % get the metadata across sessions
-        if sum(strcmp(demo.VISCODE,'bl')) == 1
-            subject_demographics_single_session(i,:)=demo(strcmp(demo.VISCODE,'bl'),:); % choose the 'bl' session. if not, mark it as missing
-            missingsubjects(i)=0;
-        else
-            %subject_demographics_single_session(i,:)=empty_row;
-            missingsubjects(i)=1;
-        end
-    else
-        missingsubjects(i)=1;
-    end
-end
-
-% Remove the subjects that dont have any metadata from both pools
-sum(missingsubjects) % 339 subjects are removed here
-
-subject_demographics_single_session(logical(missingsubjects'),:)=[];
-subjects_fs_data_filtered_mat(logical(missingsubjects'),:)=[];
-
-missing_demographics= ismissing(subject_demographics_single_session.AGE)...
-    + ismissing(subject_demographics_single_session.PTGENDER)...
-    + ismissing(subject_demographics_single_session.ICV)...
-    + ismissing(subject_demographics_single_session.SITE) ...
-    + ismissing(subject_demographics_single_session.DX_bl);
-sum(missing_demographics) % 168 subjects with at least one missing demographics
-
-subject_demographics_single_session(missing_demographics>0,:)=[];
-subjects_fs_data_filtered_mat(missing_demographics>0,:)=[];
-
-% get age, sex, and intracranial volume (ICV -- confound regressors we used in the previous study)
-% -- in addition, we need to get the site info, as there are dat afrom
-% multiple scanners
 age=subject_demographics_single_session.AGE;
 sex=subject_demographics_single_session.PTGENDER;
 sex_dummy=grp2idx(sex)-1;
 icv=subject_demographics_single_session.ICV;
 site=subject_demographics_single_session.SITE;
-diagnosis=subject_demographics_single_session.DX_bl; % there is another DX column with different labeling
-
+diagnosis=subject_demographics_single_session.DX_bl;
 labels=unique(subject_demographics_single_session.DX_bl); % unique labels: AD, CN, EMCI, LMCI, SMC
-
-%% Ensure each site has at least 10 observations
-site=subject_demographics_single_session.SITE;
-diagnosis=subject_demographics_single_session.DX_bl; % there is another DX column with different labeling
 
 % Combine into a table for processing
 T = table(site, diagnosis);
@@ -145,8 +197,6 @@ T = table(site, diagnosis);
 % Step 1: Get unique site-diagnosis combinations and their counts
 [G, site_list, dx_list] = findgroups(T.site, T.diagnosis);
 counts = splitapply(@numel, T.site, G);
-
-% Step 2: Build a table of counts
 count_table = table(site_list, dx_list, counts);
 
 % Step 3: Find sites that have at least 5 for *each* diagnosis
@@ -183,6 +233,226 @@ keep_idx = ismember(site, valid_sites);
 T_reduced = T(keep_idx, :);
 subjects_data_reduced=subjects_fs_data_filtered_mat(keep_idx,:);
 demographics_reduced=subject_demographics_single_session(keep_idx,:);
+
+%% Compare variance after Combat 
+demo=demographics_reduced;
+gmv=subjects_data_reduced;
+
+age=demo.AGE;
+sex=demo.PTGENDER;
+sex_dummy=grp2idx(sex)-1;
+icv=demo.ICV;
+site=demo.SITE;
+diagnosis=demo.DX_bl;
+
+gmv_data=gmv;
+batch=site';
+confounds=[age sex_dummy icv];
+diagnosis_nonan=diagnosis;
+
+residuals_small=combat(gmv_data', batch, confounds, 1);
+
+demo=demographics_reduced_to_single;
+gmv=subjects_fs_data_filtered_mat;
+
+age=demo.AGE;
+sex=demo.PTGENDER;
+sex_dummy=grp2idx(sex)-1;
+icv=demo.ICV;
+site=demo.SITE;
+diagnosis=demo.DX_bl;
+
+gmv_data=gmv;
+batch=site';
+confounds=[age sex_dummy icv];
+diagnosis_nonan=diagnosis;
+
+residuals_full=combat(gmv_data', batch, confounds, 1);
+% Combine into one dataset with group labels
+% Combine into one dataset with group labels
+data_full = residuals_full';
+data_sub  = residuals_small';
+
+n_regions = size(data_full, 2);
+p_values  = zeros(1, n_regions);
+
+for r = 1:n_regions
+    % Get region data
+    y1 = data_full(:, r);
+    y2 = data_sub(:, r);
+
+    % Create grouping variable
+    y   = [y1; y2];
+    grp = [ones(size(y1)); 2*ones(size(y2))];  % 1=full group, 2=subgroup
+
+    % Compute absolute deviations from group medians (Brown-Forsythe version)
+    medians = grp;
+    medians(grp==1) = median(y1, 'omitnan');
+    medians(grp==2) = median(y2, 'omitnan');
+
+    abs_dev = abs(y - medians);
+
+    % Run one-way ANOVA on absolute deviations
+    p = anova1(abs_dev, grp, 'off');  % 'off' suppresses ANOVA table plot
+
+    p_values(r) = p;
+end
+
+sum(fdr_bh(p_values))
+
+% -- each diagnosis
+
+diagnosis_labels_full = demographics_reduced_to_single.DX_bl;   % vector of length 1435, values in {'AD','CN','EMCI','LMCI','SMC'}
+diagnosis_labels_reduced = demographics_reduced.DX_bl; % vector of length 145, same categories
+
+n_regions = size(subjects_fs_data_filtered_mat, 2);
+diagnoses = {'AD','CN','EMCI','LMCI','SMC'};
+p_values = nan(length(diagnoses), n_regions);
+
+for d = 1:length(diagnoses)
+    diag = diagnoses{d};
+    
+    % Extract group from both datasets
+    idx_full = strcmp(diagnosis_labels_full, diag);
+    idx_reduced = strcmp(diagnosis_labels_reduced, diag);
+    
+    for r = 1:n_regions
+        y1 = data_full(idx_full, r);
+        y2 = data_sub(idx_reduced, r);
+
+        % Combine
+        y   = [y1; y2];
+        grp = [ones(size(y1)); 2*ones(size(y2))];
+
+        % Brown-Forsythe version: deviations from median
+        medians = grp;
+        medians(grp==1) = median(y1, 'omitnan');
+        medians(grp==2) = median(y2, 'omitnan');
+        abs_dev = abs(y - medians);
+
+        % Run ANOVA (Levene/Brown–Forsythe test)
+        p = anova1(abs_dev, grp, 'off');
+        p_values(d, r) = p;
+    end
+end
+
+% p_values(d, r) = variance difference p-value for region r in diagnosis d
+
+sum(p_values<0.05,2)
+
+
+% heatmap 
+% Assumes:
+% subjects_fs_data_filtered_mat : 1435 x 83 (full dataset after ComBat)
+% subjects_data_reduced         : 145 x 83 (balanced dataset after ComBat)
+% diagnosis_labels_full         : cell array of size 1435 with {'AD','CN','EMCI','LMCI','SMC'}
+% diagnosis_labels_reduced      : cell array of size 145 with same categories
+
+diagnoses = {'AD','CN','EMCI','LMCI','SMC'};
+n_regions = size(subjects_fs_data_filtered_mat, 2);
+
+var_ratios = nan(length(diagnoses), n_regions);
+
+for d = 1:length(diagnoses)
+    diag = diagnoses{d};
+    
+    % Extract indices for each diagnosis
+    idx_full = strcmp(diagnosis_labels_full, diag);
+    idx_reduced = strcmp(diagnosis_labels_reduced, diag);
+    
+    for r = 1:n_regions
+        y1 = data_full(idx_full, r);
+        y2 = data_sub(idx_reduced, r);
+        
+        % Compute variances
+        v1 = var(y1, 'omitnan');
+        v2 = var(y2, 'omitnan');
+        
+        % Variance ratio (full / reduced)
+        var_ratios(d, r) = v1 / v2;
+    end
+end
+
+% --- Plot heatmap ---
+figure;
+imagesc(var_ratios);
+colorbar;
+xlabel('Brain Regions');
+ylabel('Diagnosis Groups');
+yticks(1:length(diagnoses));
+yticklabels(diagnoses);
+title('Variance Ratio (Full / Balanced)');
+caxis([0.5 2]); % optional: set color scale so 1 = equal variance
+colormap(parula); % choose colormap
+
+
+
+
+
+% t-score comparison 
+
+demo=demographics_reduced;
+gmv=subjects_data_reduced;
+
+age=demo.AGE;
+sex=demo.PTGENDER;
+sex_dummy=grp2idx(sex)-1;
+icv=demo.ICV;
+site=demo.SITE;
+diagnosis=demo.DX_bl;
+
+gmv_data=gmv;
+batch=site';
+confounds=[age sex_dummy icv];
+diagnosis_nonan=diagnosis;
+
+residuals=combat(gmv_data', batch, confounds, 1);
+
+for i=1:size(residuals,1)
+    [h,p,ci,stats] = ttest2((residuals(i,strcmp(diagnosis, 'AD') )),(residuals(i,strcmp(diagnosis, 'CN') )) );
+    d=meanEffectSize((residuals(i,strcmp(diagnosis, 'AD') )),(residuals(i,strcmp(diagnosis, 'CN') )));
+    ds_gmv(i)=d.Effect;
+    ps_gmv(i)=p;
+    ts_gmv(i)=stats.tstat;
+end
+tsmall=ts_gmv;
+corrected_ps=fdr_bh(ps_gmv);
+results_to_display=ts_gmv(cortical_index).*corrected_ps(cortical_index);
+figure;plot_cortical(parcel_to_surface(results_to_display,'aparc_fsa5'), 'cmap', 'RdBu_r', 'surface_name', 'fsa5', 'color_range', [-1*max(abs(results_to_display)) max(abs(results_to_display))])
+
+%
+demo=demographics_reduced_to_single;
+gmv=subjects_fs_data_filtered_mat;
+
+age=demo.AGE;
+sex=demo.PTGENDER;
+sex_dummy=grp2idx(sex)-1;
+icv=demo.ICV;
+site=demo.SITE;
+diagnosis=demo.DX_bl;
+
+gmv_data=gmv;
+batch=site';
+confounds=[age sex_dummy icv];
+diagnosis_nonan=diagnosis;
+
+residuals=combat(gmv_data', batch, confounds, 1);
+
+for i=1:size(residuals,1)
+    [h,p,ci,stats] = ttest2((residuals(i,strcmp(diagnosis, 'AD') )),(residuals(i,strcmp(diagnosis, 'CN') )) );
+    d=meanEffectSize((residuals(i,strcmp(diagnosis, 'AD') )),(residuals(i,strcmp(diagnosis, 'CN') )));
+    ds_gmv(i)=d.Effect;
+    ps_gmv(i)=p;
+    ts_gmv(i)=stats.tstat;
+end
+tlarge=ts_gmv;
+corrected_ps=fdr_bh(ps_gmv);
+results_to_display=ts_gmv(cortical_index).*corrected_ps(cortical_index);
+figure;plot_cortical(parcel_to_surface(results_to_display,'aparc_fsa5'), 'cmap', 'RdBu_r', 'surface_name', 'fsa5', 'color_range', [-1*max(abs(results_to_display)) max(abs(results_to_display))])
+
+figure;plot_cortical(parcel_to_surface((tlarge-tsmall),'aparc_fsa5'), 'cmap', 'RdBu_r', 'surface_name', 'fsa5', 'color_range', [-1*max(abs(results_to_display)) max(abs(results_to_display))])
+
+
 %% Initial analyses on demographics 
 age=demographics_reduced.AGE;
 sex=demographics_reduced.PTGENDER;
@@ -197,12 +467,12 @@ MOCA=demographics_reduced.MOCA;
 adascog=demographics_reduced.ADAS11;
 AV45_bl=demographics_reduced.AV45_bl;
 
-
 labels=unique(demographics_reduced.DX_bl);
 sum(strcmp(sex,'Male'))
 sum(strcmp(sex,'Female'))
 mean(age)
 std(age)
+
 
 [TABLE,CHI2,P,LABELS] = crosstab(sex,diagnosis) % sex
 
@@ -246,9 +516,9 @@ xlabel('Site')
 ylabel('Mean GMV')
 ylim([5000 9000])
 title('Mean GMV by Site / After Combat')
-imagesc(corr(gmv_data'));title('Intersubject Correlation Before Combat');figure;imagesc(corr(residuals));title('Structural Covariance After Combat');title('Intersubject Correlation After Combat');
+imagesc(corr(gmv_data'));colorbar;caxis([0.95 1]);title('Intersubject Correlation Before Combat');figure;imagesc(corr(residuals));colorbar;caxis([0.95 1]);title('Structural Covariance After Combat');title('Intersubject Correlation After Combat');
 
-imagesc(corr(gmv_data));title('Structural Covariance Before Combat');figure;imagesc(corr(residuals'));title('Structural Covariance After Combat')
+imagesc(corr(gmv_data));colorbar;caxis([0 1]);title('Structural Covariance Before Combat');figure;imagesc(corr(residuals'));colorbar;caxis([0 1]);title('Structural Covariance After Combat')
 %% Regional GMV difference
 % idx = strcmp(diagnosis, 'AD') | strcmp(diagnosis, 'CN');
 % for i=1:size(residuals,1)
@@ -262,8 +532,8 @@ imagesc(corr(gmv_data));title('Structural Covariance Before Combat');figure;imag
 % Check the group-level differences
 
 for i=1:size(residuals,1)
-    [h,p,ci,stats] = ttest2((residuals(i,strcmp(diagnosis, 'SMC') )),(residuals(i,strcmp(diagnosis, 'CN') )) );
-    d=meanEffectSize((residuals(i,strcmp(diagnosis, 'SMC') )),(residuals(i,strcmp(diagnosis, 'CN') )));
+    [h,p,ci,stats] = ttest2((residuals(i,strcmp(diagnosis, 'AD') )),(residuals(i,strcmp(diagnosis, 'CN') )) );
+    d=meanEffectSize((residuals(i,strcmp(diagnosis, 'AD') )),(residuals(i,strcmp(diagnosis, 'CN') )));
     ds_gmv(i)=d.Effect;
     ps_gmv(i)=p;
     ts_gmv(i)=stats.tstat;
@@ -285,71 +555,71 @@ figure;plot_subcortical(results_to_display,'ventricles','False','cmap', 'Reds')
 % diagnosis:     [N x 1] cell array of group labels per subject
 % region_codes.label: [cell array of region names], e.g., region_codes.label{1:82}
 % Note: you must define or load region_codes.label before running this
-
-% Setup
-n_regions = 82;
-group_order = {'CN', 'SMC', 'EMCI', 'LMCI', 'AD'};
-n_groups = numel(group_order);
-colors = lines(n_groups);
-
-% Convert diagnosis to categorical with specified order
-diagnosis_cat = categorical(diagnosis, group_order, 'Ordinal', true);
-xvals = 1:n_groups;  % Group index for fitting
-
-% Create figure
-figure('Position', [100, 100, 1600, 900]);
-tiledlayout(4, 4, 'Padding', 'compact', 'TileSpacing', 'compact');
-
-for i = 49:64 %n_regions
-    nexttile;
-    hold on;
-
-    % Get data for this region
-    region_data = residuals(i, :)';
-
-    % Plot boxplot
-    boxplot(region_data, diagnosis_cat, 'Colors', 'k', 'Symbol', '');
-    
-    % Compute group means
-    group_means = zeros(1, n_groups);
-    for g = 1:n_groups
-        group_idx = strcmp(diagnosis, group_order{g});
-        group_means(g) = mean(region_data(group_idx), 'omitnan');
-    end
-
-    % Polynomial fit (2nd order)
-    p = polyfit(xvals, group_means, 2);
-    x_fit = linspace(1, n_groups, 100);
-    y_fit = polyval(p, x_fit);
-
-    % Compute R²
-    y_pred = polyval(p, xvals);
-    SS_res = sum((group_means - y_pred).^2);
-    SS_tot = sum((group_means - mean(group_means)).^2);
-    R_squared = 1 - (SS_res / SS_tot);
-
-    % Plot the fitted curve
-    plot(x_fit, y_fit, 'r-', 'LineWidth', 1.5);
-    % 
-    % % Show R² value
-    % y_text = max([group_means y_fit], [], 'omitnan');
-    % text(1, y_text - 0.05 * abs(y_text), sprintf('R^2 = %.2f', R_squared), ...
-    %  'FontSize', 6, 'Color', 'r', 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
-
-    % Axes formatting
-    xticks(xvals);
-    xticklabels(group_order);
-    xtickangle(45);
-    set(gca, 'FontSize', 6);
-    ylabel('GMV Residual', 'FontSize', 6);
-
-    % Use region label
-    title(sprintf('%s (R^2=%.2f)', region_codes.label{i}, R_squared), ...
-      'Interpreter', 'none', 'FontSize', 6);
-end
-
-% Super title
-sgtitle('GMV Residuals by Diagnosis (Boxplots with Polynomial Fit)', 'FontSize', 12);
+% 
+% % Setup
+% n_regions = 82;
+% group_order = {'CN', 'SMC', 'EMCI', 'LMCI', 'AD'};
+% n_groups = numel(group_order);
+% colors = lines(n_groups);
+% 
+% % Convert diagnosis to categorical with specified order
+% diagnosis_cat = categorical(diagnosis, group_order, 'Ordinal', true);
+% xvals = 1:n_groups;  % Group index for fitting
+% 
+% % Create figure
+% figure('Position', [100, 100, 1600, 900]);
+% tiledlayout(4, 4, 'Padding', 'compact', 'TileSpacing', 'compact');
+% 
+% for i = 49:64 %n_regions
+%     nexttile;
+%     hold on;
+% 
+%     % Get data for this region
+%     region_data = residuals(i, :)';
+% 
+%     % Plot boxplot
+%     boxplot(region_data, diagnosis_cat, 'Colors', 'k', 'Symbol', '');
+% 
+%     % Compute group means
+%     group_means = zeros(1, n_groups);
+%     for g = 1:n_groups
+%         group_idx = strcmp(diagnosis, group_order{g});
+%         group_means(g) = mean(region_data(group_idx), 'omitnan');
+%     end
+% 
+%     % Polynomial fit (2nd order)
+%     p = polyfit(xvals, group_means, 2);
+%     x_fit = linspace(1, n_groups, 100);
+%     y_fit = polyval(p, x_fit);
+% 
+%     % Compute R²
+%     y_pred = polyval(p, xvals);
+%     SS_res = sum((group_means - y_pred).^2);
+%     SS_tot = sum((group_means - mean(group_means)).^2);
+%     R_squared = 1 - (SS_res / SS_tot);
+% 
+%     % Plot the fitted curve
+%     plot(x_fit, y_fit, 'r-', 'LineWidth', 1.5);
+%     % 
+%     % % Show R² value
+%     % y_text = max([group_means y_fit], [], 'omitnan');
+%     % text(1, y_text - 0.05 * abs(y_text), sprintf('R^2 = %.2f', R_squared), ...
+%     %  'FontSize', 6, 'Color', 'r', 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left');
+% 
+%     % Axes formatting
+%     xticks(xvals);
+%     xticklabels(group_order);
+%     xtickangle(45);
+%     set(gca, 'FontSize', 6);
+%     ylabel('GMV Residual', 'FontSize', 6);
+% 
+%     % Use region label
+%     title(sprintf('%s (R^2=%.2f)', region_codes.label{i}, R_squared), ...
+%       'Interpreter', 'none', 'FontSize', 6);
+% end
+% 
+% % Super title
+% sgtitle('GMV Residuals by Diagnosis (Boxplots with Polynomial Fit)', 'FontSize', 12);
 %% Correlate GM data with PET data
 
 n_subjects = size(residuals, 2);
@@ -380,6 +650,7 @@ group_order = {'CN', 'SMC', 'EMCI', 'LMCI', 'AD'};
 
 n_groups = numel(group_order);
 colors = lines(n_groups);
+
 
 figure;
 for p = 1:n_pet
@@ -423,8 +694,6 @@ for p = 1:n_pet
 end
 
 sgtitle('Z-transformed Correlation of Subject GMV with PET Maps by Diagnosis');
-
-
 
 
 
@@ -592,11 +861,6 @@ title(sprintf('Delta difference ADxCN for %s', short_names{j}), 'Interpreter', '
 
 end
 
-% results_to_display=abs(ds_gmv(cortical_index));
-% figure;plot_cortical(parcel_to_surface(results_to_display,'aparc_fsa5'), 'cmap', 'Reds', 'surface_name', 'fsa5',...
-%     'color_range', [0.01 0.015])
-% results_to_display=abs(ds_gmv(subcortical_index));
-% figure;plot_subcortical(results_to_display,'ventricles','False','cmap', 'Reds')
 
 %% Let's try gradients
 labeling=parcel_to_surface([1:68],'aparc_fsa5')';
@@ -671,4 +935,3 @@ prctile(abs(fc_ctx_d),95)>corr(nt_gradient.gradients{1}(:,1),gm_lmci.aligned{1}(
                                    'parcellation_name', 'aparc', 'n_rot', 1000, ...
                                    'type', 'pearson');
 prctile(abs(fc_ctx_d),95)>corr(nt_gradient.gradients{1}(:,1),gm_ad.aligned{1}(:,1))
-
